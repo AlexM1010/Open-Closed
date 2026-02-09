@@ -1,0 +1,6 @@
+[submodule "life-launcher"]
+	path = life-launcher
+	url = https://github.com/AlexM1010/life-launcher.git
+[submodule "life-manager"]
+	path = life-manager
+	url = https://github.com/AlexM1010/life-manager.git
