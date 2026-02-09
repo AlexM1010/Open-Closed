@@ -4,3 +4,6 @@
 [submodule "life-manager"]
 	path = life-manager
 	url = https://github.com/AlexM1010/life-manager.git
+[submodule "life-widgets"]
+	path = life-widgets
+	url = https://github.com/AlexM1010/life-widgets.git
