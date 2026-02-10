@@ -12,38 +12,51 @@ Open-Closed is a dual-platform life management system built on Structural Optimi
 │  • Google Tasks & Calendar                                      │
 │  • Todoist (planned)                                            │
 │  • Google Fit (planned)                                         │
-│  • Custom fitness plans                                         │
 │                                                                  │
 │  Responsibilities:                                              │
 │  • Pull data from all integrations                             │
 │  • Store historical data in SQLite                             │
-│  • Run complex planning algorithm                              │
+│  • Run planning algorithm with smart time-blocking             │
 │  • Generate analytics, streaks, guardrails                     │
-│  • Export simplified daily plan to Google Calendar             │
+│  • Export daily plan to Google Calendar                        │
+│  • Energy level input (start of day ritual)                    │
+│  • Read completion/skip/snooze status from calendar            │
+│  • Celebration when tasks completed                            │
 └──────────────┬──────────────────────────────────────────────────┘
                │
-               │ Exports daily plan
+               │ Exports plan ↓ Reads status ↑
                ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                    Google Calendar/Tasks                         │
+│                    Google Calendar                               │
 │                  (Shared Source of Truth)                        │
 │                                                                  │
-│  • Stores the computed daily plan                              │
-│  • Launcher reads from here                                    │
-│  • Enables offline access for launcher                         │
+│  "Life Manager - Today's Plan" calendar:                        │
+│  • Tasks time-blocked into gaps between meetings               │
+│  • Each event has Status: pending|completed|skipped|snoozed    │
+│  • Launcher updates status, Manager reads it back              │
+│                                                                  │
+│  Primary calendar (user's events):                             │
+│  • Life Manager reads to find gaps for time-blocking           │
+│  • Launcher shows events with progressive urgency              │
 └──────────────┬──────────────────────────────────────────────────┘
                │
-               │ Reads daily plan
+               │ Reads plan ↓ Updates status ↑
                ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │            Life Launcher (Android) - Simple Display              │
 │                                                                  │
 │  Responsibilities:                                              │
-│  • Read next task from Google Calendar                         │
-│  • Display on home screen widget                               │
-│  • Swipe right to complete, left to skip                       │
-│  • Energy check-in slider (0-10)                               │
-│  • Minimal UI, maximum simplicity                              │
+│  • Show tasks from "Today's Plan" calendar                     │
+│  • Show calendar events (progressive: 45min → 15min → now)     │
+│  • Three gestures: complete, skip, snooze-to-tomorrow          │
+│  • Skip-cycling: skipped tasks rotate, show shorter next       │
+│  • Update event status in calendar                             │
+│  • Direct to web app when tasks exhausted                      │
+│                                                                  │
+│  NOT responsible for:                                           │
+│  • Energy input (done in web app)                              │
+│  • Planning algorithm (done in web app)                        │
+│  • Analytics (done in web app)                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -54,16 +67,20 @@ Open-Closed is a dual-platform life management system built on Structural Optimi
 **Life Manager (Web)** = Intelligence Layer
 - Complex data aggregation
 - Multi-source integration
+- Smart time-blocking (fits tasks into calendar gaps)
 - Historical analytics
 - Planning algorithm
 - Desktop-friendly stats dashboard
+- Energy input and plan generation
 
 **Life Launcher (Android)** = Interaction Layer
 - Simple, glanceable interface
-- Quick task completion
-- Energy logging
+- Quick task completion with gestures
+- Skip-cycling (skip → easiest task, complete → back to hardest)
+- Progressive user event display (45min → 15min → takeover)
 - No complex logic
 - Works offline with cached data
+- Directs to web app for more tasks
 
 ### Why This Architecture?
 
@@ -75,52 +92,108 @@ Open-Closed is a dual-platform life management system built on Structural Optimi
 
 ## Data Flow
 
+### Three Types of Items
+
+1. **Tasks** - Raw to-do items from Google Tasks, Todoist (not time-blocked)
+2. **User Events** - Meetings/appointments manually added to Google Calendar
+3. **Task Events** - Auto-generated by Life Manager (tasks → time-blocked calendar events)
+
 ### Daily Planning Flow
 
 ```
-1. Life Manager wakes up (scheduled job)
+1. User opens Life Manager web app
    ↓
-2. Pull data from all sources:
-   - Google Tasks (tasks by domain)
-   - Todoist (additional tasks)
-   - Google Fit (activity data)
-   - SQLite (historical completions, energy logs)
+2. Sets energy level (0-10) for the day
    ↓
-3. Run planning algorithm:
-   - Filter by energy level
-   - Score by priority + domain balance + overdue
-   - Select top N tasks for today
+3. Life Manager shows:
+   - Today's user events (meetings)
+   - Suggested tasks (sorted by urgency + domain balance)
+   - All pending tasks (scroll down)
    ↓
-4. Export to Google Calendar:
-   - Create/update "Today's Plan" calendar
-   - Each task becomes a calendar event
-   - Include metadata (domain, priority, duration)
+4. User picks tasks for today + adds time estimates
    ↓
-5. Life Launcher reads from Google Calendar:
-   - Fetch "Today's Plan" events
-   - Display next task on widget
-   - User completes → mark done in Google
+5. Smart time-blocking:
+   - Find gaps between user events
+   - Slot selected tasks into gaps (hardest first)
+   - 5-min buffer before meetings
    ↓
-6. Life Manager syncs completions:
-   - Pull completed tasks from Google
-   - Update SQLite for analytics
-   - Recalculate domain balance
+6. Export to "Life Manager - Today's Plan" calendar:
+   - Each task → task event with metadata
+   - Status: pending (initial state)
+   ↓
+7. Life Launcher reads task events from calendar
+   - Shows next pending task event
+   - User works through with gestures
 ```
 
-### Task Completion Flow
+### Task Interaction Flow (Life Launcher)
 
 ```
-User swipes right on launcher
+┌─────────────────────────────────────────────────────────────┐
+│                    GESTURE ACTIONS                          │
+├─────────────────────────────────────────────────────────────┤
+│  Swipe RIGHT  →  Complete                                   │
+│                  • Status: completed                        │
+│                  • CompletedAt: timestamp                   │
+│                  • Remove from cycle, show next             │
+├─────────────────────────────────────────────────────────────┤
+│  Swipe LEFT   →  Skip (stays in cycle)                      │
+│                  • Jump to easiest task (back of queue)     │
+│                  • Complete easy → return to hardest        │
+│                  • Cycles until completed or snoozed        │
+├─────────────────────────────────────────────────────────────┤
+│  Swipe DOWN   →  Snooze to tomorrow                         │
+│                  • Status: snoozed                          │
+│                  • SnoozedTo: tomorrow's date               │
+│                  • Remove from cycle entirely               │
+│                  • Life Manager reschedules next day        │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Event Display Flow (Life Launcher)
+
+Widget always shows **task events** (from "Today's Plan" calendar).
+**User events** (meetings from primary calendar) appear progressively:
+
+```
+Time until user event   Widget shows
+─────────────────────────────────────────────────────────────
+> 45 min                Task event only
+15-45 min               Task event + user event preview below
+< 15 min                User event takes over
+─────────────────────────────────────────────────────────────
+
+User can complete/skip user event to return to task events.
+Status added to user event (not deleted).
+```
+
+### Widget Tap Behavior
+
+| Widget State | Tap Action |
+|--------------|------------|
+| Showing task | Open Life Manager web app |
+| Showing "Need More Tasks" | Open Life Manager web app |
+| Showing event | Open event link (Zoom, Meet, Maps) |
+| No tasks, no events | Open Google Calendar for today |
+
+### Completion Sync Flow
+
+```
+User completes/skips/snoozes task in Launcher
    ↓
-Launcher marks task complete in Google Calendar
+Launcher updates calendar event description:
+   Status: completed|skipped|snoozed
+   CompletedAt/SkippedAt/SnoozedAt: timestamp
+   SnoozedTo: date (if snoozed)
    ↓
 Google Calendar syncs (automatic)
    ↓
-Life Manager detects completion (next sync cycle)
+Life Manager reads status on next sync:
+   - Completions → task_completions table
+   - Skips → task_skips table (for analytics)
+   - Snoozes → reschedule task for snoozed date
    ↓
-Updates SQLite analytics
-   ↓
-Recalculates domain balance for next plan
+Domain balance recalculated for next plan
 ```
 
 ## Task Encoding Convention
@@ -128,111 +201,79 @@ Recalculates domain balance for next plan
 Both applications understand tasks through a shared encoding format:
 
 ```
-Task Title Format:
+Event Title Format:
 [!!!] Call Mom (15m)
  │     │        │
  │     │        └── Duration in minutes
  │     └── Task title
  └── Priority: [!!!]=must-do, [!!]=should-do, [!]=nice-to-have
 
-Task List/Calendar = Domain:
-- "Health" list/calendar
-- "Admin" list/calendar
-- "Relationships" list/calendar
-- "University" list/calendar
-- "Creative" list/calendar
+Event Description Format:
+Domain: Relationships
+Task ID: 42
+Category: must-do
+Status: pending
 ```
 
-## Integration Architecture
+**Status Values:**
+- `pending` - Not yet acted on (default)
+- `completed` - User swiped right
+- `skipped` - User swiped left (tracked for analytics, but task cycles)
+- `snoozed` - User swiped down (rescheduled to SnoozedTo date)
 
-### Current Integrations
+## Smart Time-Blocking
 
-**Google Tasks & Calendar**
-- Primary task source
-- Shared between both apps
-- Free API, reliable
+Life Manager reads the user's primary calendar and slots tasks into gaps:
 
-### Planned Integrations
+```
+User's calendar:                    Life Manager exports:
+─────────────────────────────────────────────────────────────
+09:00-10:00  Team standup           
+                                    10:00-10:15  [!!!] Call Mom (15m)
+                                    10:15-10:45  [!!] Pay bills (30m)
+                                    10:50-10:55  Buffer before meeting
+11:00-12:00  Client call            
+                                    12:00-12:30  [!] Go for walk (30m)
+12:30-13:30  Lunch with Sarah       
+                                    13:30-14:00  [!!] Review docs (30m)
+```
 
-**Todoist**
-- Additional task source
-- Life Manager pulls tasks
-- Exports to Google Calendar for launcher
-
-**Google Fit**
-- Activity tracking (steps, workouts)
-- Informs energy level adjustments
-- Influences task selection
-
-**Custom Fitness Plans**
-- Weekly workout schedules
-- Adaptive intensity based on energy
-- Stored in life-manager SQLite
-- Exported as calendar events
-
-### Adding New Integrations
-
-To add a new integration:
-
-1. **Create client service** in `life-manager/src/server/services/`
-   ```typescript
-   export class NewServiceClient {
-     async fetchData(): Promise<Data[]> { ... }
-   }
-   ```
-
-2. **Add sync metadata table** in `life-manager/src/server/db/schema.ts`
-   ```typescript
-   export const newServiceSyncMetadata = sqliteTable('new_service_sync', {
-     id: integer('id').primaryKey(),
-     externalId: text('external_id').notNull(),
-     lastSyncedAt: text('last_synced_at'),
-   });
-   ```
-
-3. **Extend sync engine** in `life-manager/src/server/services/sync-engine.ts`
-   ```typescript
-   async importFromNewService() {
-     const data = await this.newServiceClient.fetchData();
-     // Store in SQLite
-     // Export relevant items to Google Calendar
-   }
-   ```
-
-4. **Update planner algorithm** to incorporate new data source
-
-5. **Launcher automatically sees results** through Google Calendar
+**Rules:**
+- Minimum gap: 10 minutes
+- Buffer before meetings: 5 minutes
+- All-day events: Ignored (don't block time)
+- Tasks that don't fit: Scheduled at end of day
 
 ## Planning Algorithm
 
-The algorithm is deterministic and runs in life-manager:
+The algorithm is deterministic and runs in Life Manager:
 
 **Inputs:**
-- Tasks from all sources (Google, Todoist, etc.)
-- Completions in last 7 days (from SQLite)
-- Current energy level (from latest check-in)
-- Activity data (from Google Fit)
+- Tasks from all sources (Google Tasks, etc.)
+- User's calendar events (for time-blocking)
+- Completions/skips in last 7 days (from SQLite)
+- Current energy level (from web app input)
 - Current date and time
 
 **Algorithm:**
-1. Aggregate tasks from all sources
-2. Filter by energy-based duration cap
-3. Score each task:
+1. Read user's calendar, find gaps
+2. Aggregate tasks from all sources
+3. Filter by energy-based duration cap
+4. Score each task:
    ```
    score = priority_weight 
          + domain_neglect_bonus 
          + overdue_bonus
-         + fitness_plan_bonus
    ```
-4. Select top N tasks (N depends on energy)
-5. Export to Google Calendar as "Today's Plan"
+5. Slot top N tasks into calendar gaps
+6. Export to "Life Manager - Today's Plan" calendar
 
 **Energy Configuration:**
-| Energy | Tasks | Duration Cap | Fitness Intensity |
-|--------|-------|--------------|-------------------|
-| 0-3    | 2-3   | 15 min max   | Rest day          |
-| 4-6    | 3-5   | No cap       | Light workout     |
-| 7-10   | 5-6   | No cap       | Full intensity    |
+| Energy | Tasks | Duration Cap |
+|--------|-------|--------------|
+| 0-3    | 2-3   | 15 min max   |
+| 4-6    | 3-5   | No cap       |
+| 7-10   | 5-6   | No cap       |
 
 ## Technology Stack
 
@@ -241,13 +282,13 @@ The algorithm is deterministic and runs in life-manager:
 - **Backend**: Express + tRPC
 - **Database**: SQLite + Drizzle ORM
 - **Testing**: Vitest + fast-check
-- **APIs**: Google Calendar, Google Tasks, (Todoist, Google Fit planned)
+- **APIs**: Google Calendar, Google Tasks
 
 ### Life Launcher (Android)
 - **Language**: Kotlin
-- **UI**: Android Widgets + Custom Views
+- **UI**: Android Widgets + Custom Views + Gesture Detection
 - **APIs**: Google Calendar API (via Play Services)
-- **Storage**: SharedPreferences (cache only)
+- **Storage**: SharedPreferences (cache + cycle state)
 
 ## Security & Privacy
 
@@ -268,7 +309,8 @@ The algorithm is deterministic and runs in life-manager:
 ### Life Launcher
 - Caches last fetched plan from Google Calendar
 - Shows cached tasks when offline
-- Queues completions for sync when back online
+- Maintains local skip-cycle state
+- Queues status updates for sync when back online
 - Shows "Offline" indicator
 
 ### Life Manager
@@ -288,10 +330,6 @@ The algorithm is deterministic and runs in life-manager:
    - Deploy to personal VPS
    - Railway, Fly.io, or Render
 
-3. **Shared hosting** (future)
-   - Multi-tenant with user isolation
-   - Each user's data in their Google account
-
 ### Life Launcher
 - Distributed via APK or Google Play Store
 - Each user authenticates with their own Google account
@@ -302,18 +340,15 @@ The algorithm is deterministic and runs in life-manager:
 ### Planned Features
 - [ ] Todoist integration
 - [ ] Google Fit integration
-- [ ] Custom fitness plan builder
-- [ ] Habit tracking
-- [ ] Weekly review generator
-- [ ] Voice input for task creation
-- [ ] Wear OS companion app
+- [ ] Domain balance radar chart
+- [ ] Weekly review prompt
+- [ ] Streak visualization in launcher
+- [ ] Voice completion ("Hey Google, mark task complete")
 
 ### Architectural Improvements
 - [ ] Real-time sync (WebSocket/SSE)
 - [ ] Conflict resolution UI
-- [ ] Multi-device energy sync
 - [ ] Backup/restore functionality
-- [ ] Export to other calendar apps
 
 ## Development Workflow
 
@@ -335,10 +370,11 @@ adb install app/build/outputs/apk/debug/app-debug.apk
 ### Testing Integration
 1. Set up Google OAuth credentials
 2. Run life-manager locally
-3. Add tasks via life-manager UI
-4. Verify they appear in Google Calendar
+3. Set energy level, generate plan
+4. Verify tasks appear in Google Calendar with time blocks
 5. Open life-launcher on Android
-6. Verify tasks appear in widget
+6. Verify tasks appear, test gestures
+7. Verify status updates sync back to Life Manager
 
 ## Contributing
 
